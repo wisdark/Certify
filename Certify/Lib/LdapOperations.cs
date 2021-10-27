@@ -14,6 +14,7 @@ namespace Certify.Lib
     {
         private readonly LdapSearchOptions _searchOptions;
         private string? _configurationPath = null;
+        private string? _ldapServer = null;
 
         public string ConfigurationPath
         {
@@ -28,6 +29,25 @@ namespace Certify.Lib
             }
 
             set => _configurationPath = value;
+        }
+
+        public string LdapServer
+        {
+            get
+            {
+                if (_searchOptions.LdapServer == null)
+                {
+                    _ldapServer = "";
+                }
+                else
+                {
+                    _ldapServer = $"{_searchOptions.LdapServer}/";
+                }
+
+                return _ldapServer;
+            }
+
+            set => _ldapServer = value;
         }
 
         public LdapOperations()
@@ -54,7 +74,7 @@ namespace Certify.Lib
 
             // Container location per MS-WCCE 2.2.2.11.2 Enrollment Services Container
             // - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/3ec073ec-9b91-4bee-964e-56f22a93a28c
-            var root = new DirectoryEntry($"LDAP://CN=Public Key Services,CN=Services,{ConfigurationPath}");
+            var root = new DirectoryEntry($"LDAP://{LdapServer}CN=Public Key Services,CN=Services,{ConfigurationPath}");
 
             var ds = new DirectorySearcher(root)
             {
@@ -67,13 +87,13 @@ namespace Certify.Lib
             {
                 var name = ParseName(sr);
                 var domainName = ParseDomainName(sr);
-                var distinguisheName = ParseDistinguishedName(sr);
+                var distinguishedName = sr.Path;
                 var sd = ParseSecurityDescriptor(sr);
 
                 var pkiObject = new PKIObject(
                     name,
                     domainName,
-                    distinguisheName,
+                    distinguishedName,
                     sd
                 );
 
@@ -84,12 +104,12 @@ namespace Certify.Lib
             var enterpriseCAs = GetEnterpriseCAs();
             if (enterpriseCAs.Count() > 0)
             {
-                List<string> caDNSnames = new List<string>();
+                var caDNSnames = new List<string>();
                 foreach (var enterpriseCA in enterpriseCAs)
                 {
                     caDNSnames.Add($"(dnshostname={enterpriseCA.DnsHostname})");
                 }
-                string caNameFilter = $"(|{ String.Join("", caDNSnames)})";
+                var caNameFilter = $"(|{ String.Join("", caDNSnames)})";
 
                 var caDS = new DirectorySearcher()
                 {
@@ -102,13 +122,13 @@ namespace Certify.Lib
                 {
                     var name = ParseSamAccountName(sr);
                     var domainName = ParseDomainName(sr);
-                    var distinguisheName = ParseDistinguishedName(sr);
+                    var distinguishedName = sr.Path;
                     var sd = ParseSecurityDescriptor(sr);
 
                     var pkiObject = new PKIObject(
                         name,
                         domainName,
-                        distinguisheName,
+                        distinguishedName,
                         sd
                     );
 
@@ -126,7 +146,7 @@ namespace Certify.Lib
 
             // Container location per MS-WCCE 2.2.2.11.2 Enrollment Services Container
             // - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/3ec073ec-9b91-4bee-964e-56f22a93a28c
-            var root = new DirectoryEntry($"LDAP://CN=Enrollment Services,CN=Public Key Services,CN=Services,{ConfigurationPath}");
+            var root = new DirectoryEntry($"LDAP://{LdapServer}CN=Enrollment Services,CN=Public Key Services,CN=Services,{ConfigurationPath}");
             var ds = new DirectorySearcher(root);
 
             if (caName == null) ds.Filter = "(objectCategory=pKIEnrollmentService)";
@@ -155,6 +175,7 @@ namespace Certify.Lib
                 }
 
                 var ca = new EnterpriseCertificateAuthority(
+                    sr.Path,
                     name,
                     domainName,
                     guid,
@@ -171,12 +192,12 @@ namespace Certify.Lib
             return cas;
         }
 
-       
+
         public CertificateAuthority GetNtAuthCertificates()
         {
             // Container location per MS-WCCE 2.2.2.11.3 NTAuthCertificates Object
             // - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/f1004c63-8508-43b5-9b0b-ee7880183745
-            var root = new DirectoryEntry($"LDAP://CN=NTAuthCertificates,CN=Public Key Services,CN=Services,{ConfigurationPath}");
+            var root = new DirectoryEntry($"LDAP://{LdapServer}CN=NTAuthCertificates,CN=Public Key Services,CN=Services,{ConfigurationPath}");
             var ds = new DirectorySearcher(root);
             ds.Filter = "(objectClass=certificationAuthority)";
 
@@ -193,6 +214,7 @@ namespace Certify.Lib
             var certs = ParseCaCertificate(sr);
 
             return new CertificateAuthority(
+                sr.Path,
                 name,
                 domainName,
                 guid,
@@ -209,7 +231,7 @@ namespace Certify.Lib
 
             // Container location per MS-WCCE 2.2.2.11.1 Certificates Templates Container
             // - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/9279abb2-3dfa-4631-845c-43c187ac4b44
-            var root = new DirectoryEntry($"LDAP://CN=Certificate Templates,CN=Public Key Services,CN=Services,{ConfigurationPath}");
+            var root = new DirectoryEntry($"LDAP://{LdapServer}CN=Certificate Templates,CN=Public Key Services,CN=Services,{ConfigurationPath}");
             var ds = new DirectorySearcher(root)
             {
                 SecurityMasks = SecurityMasks.Dacl | SecurityMasks.Owner,
@@ -238,12 +260,15 @@ namespace Certify.Lib
 
                 var ekus = ParseExtendedKeyUsages(sr);
                 var authorizedSignatures = ParseAuthorizedSignatures(sr);
-                var applicationPolicies = ParseApplicationPolicies(sr);
+                var raApplicationPolicies = ParseRaApplicationPolicies(sr);
                 var issuancePolicies = ParseIssuancePolicies(sr);
 
                 var securityDescriptor = ParseSecurityDescriptor(sr);
 
+                var applicationPolicies = ParseCertificateApplicationPolicies(sr);
+
                 templates.Add(new CertificateTemplate(
+                    sr.Path,
                     name,
                     domainName,
                     guid,
@@ -256,9 +281,10 @@ namespace Certify.Lib
                     enrollmentFlag,
                     ekus,
                     authorizedSignatures,
-                    applicationPolicies,
+                    raApplicationPolicies,
                     issuancePolicies,
-                    securityDescriptor
+                    securityDescriptor,
+                    applicationPolicies
                 ));
             }
 
@@ -272,7 +298,7 @@ namespace Certify.Lib
 
             // Container location per MS-WCCE 2.2.2.11.4 Certification Authorities Container
             // - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-wcce/6c446198-f670-4885-97a9-cbc50a2b96b4
-            var root = new DirectoryEntry($"LDAP://CN=Certification Authorities,CN=Public Key Services,CN=Services,{ConfigurationPath}");
+            var root = new DirectoryEntry($"LDAP://{LdapServer}CN=Certification Authorities,CN=Public Key Services,CN=Services,{ConfigurationPath}");
             var ds = new DirectorySearcher(root);
 
             ds.Filter = "(objectCategory=certificationAuthority)";
@@ -288,6 +314,7 @@ namespace Certify.Lib
                 var certs = ParseCaCertificate(sr);
 
                 var ca = new CertificateAuthority(
+                    sr.Path,
                     name,
                     domainName,
                     guid,
@@ -329,7 +356,7 @@ namespace Certify.Lib
             }
 
             var sdbytes = (byte[])sr.Properties["ntsecuritydescriptor"][0];
-            ActiveDirectorySecurity sd = new ActiveDirectorySecurity();
+            var sd = new ActiveDirectorySecurity();
             sd.SetSecurityDescriptorBinaryForm(sdbytes);
 
             return sd;
@@ -444,7 +471,7 @@ namespace Certify.Lib
             if (!sr.Properties.Contains("mspki-template-schema-version"))
                 return null;
 
-            int schemaVersion = 0;
+            var schemaVersion = 0;
             int.TryParse(sr.Properties["mspki-template-schema-version"][0].ToString(), out schemaVersion);
             return schemaVersion;
         }
@@ -498,7 +525,7 @@ namespace Certify.Lib
             return authorizedSignatures;
         }
 
-        private static IEnumerable<string>? ParseApplicationPolicies(SearchResult sr)
+        private static IEnumerable<string>? ParseRaApplicationPolicies(SearchResult sr)
         {
             if (!sr.Properties.Contains("mspki-ra-application-policies"))
                 return null;
@@ -512,6 +539,14 @@ namespace Certify.Lib
                 return null;
 
             return from object oid in sr.Properties["mspki-ra-policies"] select oid.ToString();
+        }
+
+        private static IEnumerable<string>? ParseCertificateApplicationPolicies(SearchResult sr)
+        {
+            if (!sr.Properties.Contains("mspki-certificate-application-policy"))
+                return null;
+
+            return from object oid in sr.Properties["mspki-certificate-application-policy"] select oid.ToString();
         }
 
         private T ParseUIntToEnum<T>(string value)
@@ -601,6 +636,6 @@ namespace Certify.Lib
             {
                 return "ERROR";
             }
-        }        
+        }
     }
 }
